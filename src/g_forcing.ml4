@@ -1,3 +1,5 @@
+open Stdarg
+open Extraargs
 DECLARE PLUGIN "forcing"
 
 TACTIC EXTEND force
