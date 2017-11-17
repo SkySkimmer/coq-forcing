@@ -1,4 +1,5 @@
-open Constrarg
+open Ltac_plugin
+open Stdarg
 open Extraargs
 
 DECLARE PLUGIN "forcing"
@@ -6,10 +7,10 @@ DECLARE PLUGIN "forcing"
 TACTIC EXTEND force
 | [ "force" constr(obj) constr(hom) constr(c) ] -> [
   let cat = {
-    FTranslate.cat_obj = obj;
-    FTranslate.cat_hom = hom;
+    FTranslate.cat_obj = EConstr.Unsafe.to_constr obj;
+    FTranslate.cat_hom = EConstr.Unsafe.to_constr hom;
   } in
-  FPlugin.force_tac cat c
+  FPlugin.force_tac cat (EConstr.Unsafe.to_constr c)
 ]
 END
 

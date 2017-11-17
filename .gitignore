@@ -9,7 +9,9 @@
 *.cmi
 *.cma
 *.cmxa
+*.cmt
+*.cmti
 *.d
 *.a
 Makefile.coq
-
+Makefile.coq.conf

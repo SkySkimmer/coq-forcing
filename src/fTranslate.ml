@@ -3,10 +3,8 @@ open Term
 open Declarations
 open Environ
 open Globnames
-open Pp
 
 module RelDecl = Context.Rel.Declaration
-module NamedDecl = Context.Named.Declaration
 
 type translator = global_reference Refmap.t
 exception MissingGlobal of global_reference
@@ -131,11 +129,6 @@ let translate_var fctx n =
   let m = get_var_shift n fctx in
   mkApp (mkRel m, [| p; f |])
 
-let rec untranslate_rel n c = match Constr.kind c with
-| App (t, args) when isRel t && Array.length args >= 2 ->
-  c
-| _ -> Constr.map_with_binders succ untranslate_rel n c
-
 let get_inductive fctx ind =
   let gr = IndRef ind in
   let gr_ =
@@ -159,6 +152,14 @@ let apply_global env sigma gr u fctx =
   | _ -> (sigma, mkApp (c, [| mkRel last |]))
 
 (** Forcing translation core *)
+
+let rel_of_tuple =
+  let open RelDecl in
+  function
+  | id, None, ty -> LocalAssum (id, ty)
+  | id, Some v, ty -> LocalDef (id, v, ty)
+
+let isInd t = match Constr.kind t with Ind _ -> true | _ -> false
 
 let rec otranslate env fctx sigma c = match kind_of_term c with
 | Rel n ->
@@ -239,7 +240,7 @@ let rec otranslate env fctx sigma c = match kind_of_term c with
           to the forcing context *)
        let (sigma, u_) = otranslate_boxed_type env fctx sigma u in
        let fctx = add_variable fctx in
-       (sigma, fctx), RelDecl.of_tuple (na, o, u_)
+       (sigma, fctx), rel_of_tuple (na, o, u_)
      in
      let (sigma, fctx), args = CList.fold_map fold (sigma, fctx) args in
      let (sigma, self_) = otranslate_type env fctx sigma self in
@@ -247,15 +248,14 @@ let rec otranslate env fctx sigma c = match kind_of_term c with
      let (sigma, r_) = otranslate_type env fctx_ sigma r_ in
      let (ext, ufctx) = extend fctx in
      let selfid = Id.of_string "self" in
-     let flags = let open CClosure in
-       RedFlags.red_add betaiota RedFlags.fDELTA
-     in
-     let r_ = Reductionops.clos_norm_flags flags env Evd.empty r_ in
+     let open CClosure in
+     let flags = RedFlags.red_add betaiota RedFlags.fDELTA in
+     let r_ = norm_val (create_clos_infos flags env) (inject r_) in
      let r_ = Vars.substnl [it_mkLambda_or_LetIn (mkVar selfid) ext] 1 (Vars.lift 1 r_) in
-     let r_ = Reductionops.nf_beta Evd.empty r_ in 
+     let r_ = norm_val (create_clos_infos beta env) (inject r_) in
      let r_ = Vars.subst_var selfid r_ in
      let r_ = it_mkLambda_or_LetIn r_ (RelDecl.LocalAssum (na, self_) :: args) in
-     (sigma, r_)       
+     (sigma, r_)
    in
    let (sigma, r_) = fix_return_clause env fctx sigma r in
    let fold sigma u = otranslate env fctx sigma u in
@@ -345,7 +345,7 @@ let translate_context ?(toplevel = true) ?lift translator cat env sigma ctx =
     let (ext, tfctx) = extend fctx in
     let (sigma, t_) = otranslate_type env tfctx sigma t in
     let t_ = it_mkProd_or_LetIn t_ ext in
-    let decl_ = RelDecl.of_tuple (na, body_, t_) in
+    let decl_ = rel_of_tuple (na, body_, t_) in
     let fctx = add_variable fctx in
     (sigma, fctx, decl_ :: ctx_)
   in
