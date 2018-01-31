@@ -1,4 +1,5 @@
 open Names
+open Constr
 open Term
 open Declarations
 open Environ
@@ -24,20 +25,20 @@ let knt_name = Name (Id.of_string "k")
 let hom cat a b =
   let lft = mkApp (cat.cat_hom, [| Vars.lift 1 b; mkRel 1 |]) in
   let rgt = mkApp (cat.cat_hom, [| Vars.lift 2 a; mkRel 2 |]) in
-  let arr = mkArrow lft rgt in
-  mkProd (obj_name, cat.cat_obj, arr)
+  let arr = mkArrow lft Relevant rgt in
+  mkProd (obj_name, Relevant, cat.cat_obj, arr)
 
 let refl cat a =
   let hom = mkApp (cat.cat_hom, [| Vars.lift 1 a; mkRel 1 |]) in
-  let lam = mkLambda (knt_name, hom, mkRel 1) in
-  mkLambda (obj_name, cat.cat_obj, lam)
+  let lam = mkLambda (knt_name, Relevant, hom, mkRel 1) in
+  mkLambda (obj_name, Relevant, cat.cat_obj, lam)
 
 let trns cat a b c f g =
   let hom = mkApp (cat.cat_hom, [| Vars.lift 1 c; mkRel 1 |]) in
   let app = mkApp (Vars.lift 2 g, [| mkRel 2; mkRel 1 |]) in
   let app' = mkApp (Vars.lift 2 f, [| mkRel 2; app |]) in
-  let lam = mkLambda (knt_name, hom, app') in
-  mkLambda (obj_name, cat.cat_obj, lam)
+  let lam = mkLambda (knt_name, Relevant, hom, app') in
+  mkLambda (obj_name, Relevant, cat.cat_obj, lam)
 
 (** Optimization of cuts *)
 
@@ -114,8 +115,8 @@ let extend fctx =
   let open RelDecl in
   let cat = fctx.category in
   let last = last_condition fctx in
-  let ext = [LocalAssum (hom_name, hom cat (mkRel (1 + last)) (mkRel 1));
-             LocalAssum (pos_name, cat.cat_obj)] in
+  let ext = [LocalAssum (hom_name, Relevant, hom cat (mkRel (1 + last)) (mkRel 1));
+             LocalAssum (pos_name, Relevant, cat.cat_obj)] in
   (ext, { fctx with context = Lift :: fctx.context })
 
 let add_variable fctx =
@@ -156,8 +157,8 @@ let apply_global env sigma gr u fctx =
 let rel_of_tuple =
   let open RelDecl in
   function
-  | id, None, ty -> LocalAssum (id, ty)
-  | id, Some v, ty -> LocalDef (id, v, ty)
+  | id, r, None, ty -> LocalAssum (id, r, ty)
+  | id, r, Some v, ty -> LocalDef (id, r, v, ty)
 
 let isInd t = match Constr.kind t with Ind _ -> true | _ -> false
 
@@ -181,7 +182,7 @@ let rec otranslate env fctx sigma c = match kind_of_term c with
   let (sigma, t_) = otranslate_type env fctx sigma t in
   let ans = mkCast (c_, k, t_) in
   (sigma, ans)
-| Prod (na, t, u) ->
+| Prod (na, r, t, u) ->
   let (ext0, fctx) = extend fctx in
   (** Translation of t *)
   let (sigma, t_) = otranslate_boxed_type env fctx sigma t in
@@ -189,23 +190,23 @@ let rec otranslate env fctx sigma c = match kind_of_term c with
   let ufctx = add_variable fctx in
   let (sigma, u_) = otranslate_type env ufctx sigma u in
   (** Result *)
-  let ans = mkProd (na, t_, u_) in
+  let ans = mkProd (na, r, t_, u_) in
   let lam = it_mkLambda_or_LetIn ans ext0 in
   (sigma, lam)
-| Lambda (na, t, u) ->
+| Lambda (na, r, t, u) ->
   (** Translation of t *)
   let (sigma, t_) = otranslate_boxed_type env fctx sigma t in
   (** Translation of u *)
   let ufctx = add_variable fctx in
   let (sigma, u_) = otranslate env ufctx sigma u in
-  let ans = mkLambda (na, t_, u_) in
+  let ans = mkLambda (na, r, t_, u_) in
   (sigma, ans)
-| LetIn (na, c, t, u) ->
+| LetIn (na, r, c, t, u) ->
   let (sigma, c_) = otranslate_boxed env fctx sigma c in
   let (sigma, t_) = otranslate_boxed_type env fctx sigma t in
   let ufctx = add_variable fctx in
   let (sigma, u_) = otranslate env ufctx sigma u in
-  (sigma, mkLetIn (na, c_, t_, u_))
+  (sigma, mkLetIn (na, r, c_, t_, u_))
 | App (t, args) when isInd t ->
   let (ind, u) = destInd t in
   otranslate_ind env fctx sigma ind u args
@@ -223,7 +224,7 @@ let rec otranslate env fctx sigma c = match kind_of_term c with
   otranslate_ind env fctx sigma ind u [||]
 | Construct (c, u) ->
   apply_global env sigma (ConstructRef c) u fctx
-| Case (ci, r, c, p) ->
+| Case (ci, r, is, c, p) ->
    let ind_ = get_inductive fctx ci.ci_ind in
    let ci_ = Inductiveops.make_case_info env ind_ ci.ci_pp_info.style in
    let (sigma, c_) = otranslate env fctx sigma c in
@@ -231,16 +232,16 @@ let rec otranslate env fctx sigma c = match kind_of_term c with
      (** The return clause structure is fun indexes self => Q
          All indices must be boxed, but self only needs to be translated *)
      let (args, r_) = decompose_lam_assum r in
-     let (na, self, args) = match args with
-       | RelDecl.LocalAssum (na, ty) :: t -> (na, ty, t)
+     let (na, rself, self, args) = match args with
+       | RelDecl.LocalAssum (na, relevant, ty) :: t -> (na, relevant, ty, t)
        | _ -> assert false in
      let fold (sigma, fctx) decl =
-       let (na, o, u) = RelDecl.to_tuple decl in
+       let (na, ro, o, u) = RelDecl.to_tuple decl in
       (** For every translated index, the corresponding variable is added
           to the forcing context *)
        let (sigma, u_) = otranslate_boxed_type env fctx sigma u in
        let fctx = add_variable fctx in
-       (sigma, fctx), rel_of_tuple (na, o, u_)
+       (sigma, fctx), rel_of_tuple (na, ro, o, u_)
      in
      let (sigma, fctx), args = CList.fold_map fold (sigma, fctx) args in
      let (sigma, self_) = otranslate_type env fctx sigma self in
@@ -254,13 +255,18 @@ let rec otranslate env fctx sigma c = match kind_of_term c with
      let r_ = Vars.substnl [it_mkLambda_or_LetIn (mkVar selfid) ext] 1 (Vars.lift 1 r_) in
      let r_ = norm_val (create_clos_infos beta env) (inject r_) in
      let r_ = Vars.subst_var selfid r_ in
-     let r_ = it_mkLambda_or_LetIn r_ (RelDecl.LocalAssum (na, self_) :: args) in
+     let r_ = it_mkLambda_or_LetIn r_ (RelDecl.LocalAssum (na, rself, self_) :: args) in
      (sigma, r_)
    in
    let (sigma, r_) = fix_return_clause env fctx sigma r in
    let fold sigma u = otranslate env fctx sigma u in
    let (sigma, p_) = CArray.fold_map fold sigma p in
-   (sigma, mkCase (ci_, r_, c_, p_))
+   let is_ = match is with
+     | None -> None
+     | Some is -> CErrors.user_err ~hdr:"otranslate"
+                    Pp.(str "irrelevant -> relevant match not implemented")
+   in
+   (sigma, mkCase (ci_, r_, is_, c_, p_))
 | Fix f -> assert false
 | CoFix f -> assert false
 | Proj (p, c) -> assert false
@@ -325,19 +331,19 @@ let empty translator cat lift env =
 let translate ?(toplevel = true) ?lift translator cat env sigma c =
   let empty = empty translator cat lift env in
   let (sigma, c) = otranslate env empty sigma c in
-  let ans = if toplevel then mkLambda (pos_name, cat.cat_obj, c) else c in
+  let ans = if toplevel then mkLambda (pos_name, Relevant, cat.cat_obj, c) else c in
   (sigma, ans)
 
 let translate_type ?(toplevel = true) ?lift translator cat env sigma c =
   let empty = empty translator cat lift env in
   let (sigma, c) = otranslate_type env empty sigma c in
-  let ans = if toplevel then mkProd (pos_name, cat.cat_obj, c) else c in
+  let ans = if toplevel then mkProd (pos_name, Relevant, cat.cat_obj, c) else c in
   (sigma, ans)
 
 let translate_context ?(toplevel = true) ?lift translator cat env sigma ctx =
   let empty = empty translator cat lift env in
   let fold decl (sigma, fctx, ctx_) =
-    let (na, body, t) = RelDecl.to_tuple decl in
+    let (na, rt, body, t) = RelDecl.to_tuple decl in
     let (sigma, body_) = match body with
     | None -> (sigma, None)
     | Some _ -> assert false
@@ -345,10 +351,10 @@ let translate_context ?(toplevel = true) ?lift translator cat env sigma ctx =
     let (ext, tfctx) = extend fctx in
     let (sigma, t_) = otranslate_type env tfctx sigma t in
     let t_ = it_mkProd_or_LetIn t_ ext in
-    let decl_ = rel_of_tuple (na, body_, t_) in
+    let decl_ = rel_of_tuple (na, rt, body_, t_) in
     let fctx = add_variable fctx in
     (sigma, fctx, decl_ :: ctx_)
   in
-  let init = if toplevel then [RelDecl.LocalAssum (pos_name, cat.cat_obj)] else [] in
+  let init = if toplevel then [RelDecl.LocalAssum (pos_name, Relevant, cat.cat_obj)] else [] in
   let (sigma, _, ctx_) = List.fold_right fold ctx (sigma, empty, init) in
   (sigma, ctx_)

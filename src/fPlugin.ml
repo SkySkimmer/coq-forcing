@@ -2,6 +2,7 @@ open CErrors
 open Pp
 open Util
 open Names
+open Constr
 open Term
 open Decl_kinds
 open Libobject
@@ -85,7 +86,7 @@ let force_translate_constant cat cst ids =
   let evdref = ref sigma in
   let () = Typing.e_check env evdref (EConstr.of_constr body) (EConstr.of_constr typ) in
   let sigma = !evdref in
-  let uctx = UState.context (Evd.evar_universe_context sigma) in
+  let uctx = Entries.Monomorphic_const_entry (UState.context_set (Evd.evar_universe_context sigma)) in
   let ce = Declare.definition_entry ~types:typ ~univs:uctx body in
   let cd = Entries.DefinitionEntry ce in
   let decl = (cd, IsProof Lemma) in
@@ -95,7 +96,7 @@ let force_translate_constant cat cst ids =
 let eta_reduce c =
   let rec aux c =
     match kind_of_term c with
-    | Lambda (n, t, b) ->
+    | Lambda (n, r, t, b) ->
        let rec eta b =
 	 match kind_of_term b with
 	 | App (f, args) ->
@@ -124,8 +125,8 @@ let get_mind_globrefs mind =
 let rel_of_tuple =
   let open RelDecl in
   function
-  | id, None, ty -> LocalAssum (id, ty)
-  | id, Some v, ty -> LocalDef (id, v, ty)
+  | id, r, None, ty -> LocalAssum (id, r, ty)
+  | id, r, Some v, ty -> LocalDef (id, r, v, ty)
 
 let force_translate_inductive cat ind ids =
   (** From a kernel inductive body construct an entry for the inductive. There
@@ -140,6 +141,7 @@ let force_translate_inductive cat ind ids =
   let substind =
     Array.map_to_list (fun oib ->
         NamedDecl.LocalAssum (oib.mind_typename,
+                              oib.mind_relevant,
 			      Inductive.type_of_inductive env ((mib, oib), Univ.Instance.empty)))
       mib.mind_packets
   in
@@ -155,17 +157,17 @@ let force_translate_inductive cat ind ids =
       let fnbody = mkApp (mkVar oib.mind_typename, args) in
       let obj = cat.FTranslate.cat_obj in
       let fold (sigma, ctxt) decl =
-        let (x, o, t_) = RelDecl.to_tuple decl in
+        let (x, rt, o, t_) = RelDecl.to_tuple decl in
         let (sigma, tr_t_) = FTranslate.translate_type translator cat env sigma t_ in
-        (sigma, rel_of_tuple (x, o, tr_t_) :: ctxt)
+        (sigma, rel_of_tuple (x, rt, o, tr_t_) :: ctxt)
       in
       let (sigma, tr_arity) = List.fold_left fold (sigma, []) oib.mind_arity_ctxt in
       let open RelDecl in
       (sigma, it_mkLambda_or_LetIn fnbody
-         ([LocalAssum (Anonymous, FTranslate.hom cat (mkRel 3) (mkRel (3 + narityctxt)));
-           LocalAssum (Anonymous, obj)]
+         ([LocalAssum (Anonymous, Relevant, FTranslate.hom cat (mkRel 3) (mkRel (3 + narityctxt)));
+           LocalAssum (Anonymous, Relevant, obj)]
           @ tr_arity
-          @ [LocalAssum (Anonymous, obj)]))
+          @ [LocalAssum (Anonymous, Relevant, obj)]))
     in
     let fold (sigma, acc) oib =
       let (sigma, fn) = fn_oib oib in
@@ -216,6 +218,7 @@ let force_translate_inductive cat ind ids =
       let typ_ = Vars.substn_vars (List.length params + 1) invsubst typ_ in
       let envtyp_ =
         Environ.push_rel (RelDecl.LocalAssum (Name (Nameops.add_suffix body.mind_typename "_f"),
+                                              Relevant,
 		                              it_mkProd_or_LetIn arity params))
           env
       in
@@ -264,13 +267,13 @@ let force_translate_inductive cat ind ids =
   in
 (*   List.iter debug bodies_; *)
   let make_param = function
-    | RelDecl.LocalAssum (na,t) -> (Nameops.out_name na, LocalAssumEntry t)
-    | RelDecl.LocalDef (na,b,_) -> (Nameops.out_name na, LocalDefEntry b)
+    | RelDecl.LocalAssum (na,r,t) -> (Nameops.out_name na, LocalAssumEntry t)
+    | RelDecl.LocalDef (na,r,b,_) -> (Nameops.out_name na, LocalDefEntry b)
   in
   let params_ = List.map make_param params_ in
   let uctx = match mib.mind_universes with
     | Polymorphic_ind _ -> Polymorphic_ind_entry (UState.context (Evd.evar_universe_context sigma))
-    | Monomorphic_ind _ -> Monomorphic_ind_entry (UState.context (Evd.evar_universe_context sigma))
+    | Monomorphic_ind _ -> Monomorphic_ind_entry (UState.context_set (Evd.evar_universe_context sigma))
     | Cumulative_ind _ -> user_err Pp.(str "not implemented cumulative inductive translation")
   in
   let mib_ = {
@@ -332,7 +335,8 @@ let force_implement (obj, hom) id typ idopt =
   let (sigma, _) = Typing.type_of env sigma (EConstr.of_constr typ_) in
   let hook _ dst =
     (** Declare the original term as an axiom *)
-    let param = (None, false, (typ, UState.context uctx), None) in
+    let univs = Entries.Monomorphic_const_entry (UState.context_set uctx) in
+    let param = (None, (typ, univs), None) in
     let cb = Entries.ParameterEntry param in
     let cst = Declare.declare_constant id (cb, IsDefinition Definition) in
     (** Attach the axiom to the forcing implementation *)
